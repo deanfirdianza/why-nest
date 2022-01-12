@@ -1,0 +1,115 @@
+definitions:
+  steps:
+    - step: &install-dependencies
+        name: Install dependencies
+        image: node:lts-alpine
+        caches:
+          - node
+        script:
+          - npm ci
+    - step: &lint
+        name: Lint
+        image: node:lts-alpine
+        caches:
+          - node
+        script:
+          - npm run lint
+    - step: &test
+        name: Test
+        image: node:lts-alpine
+        caches:
+          - node
+        script:
+          - npm run test
+    - step: &set-environment
+        name: Set environment
+        deployment: test
+        script:
+          - export > .env-pipeline
+          - cat .env-pipeline
+        artifacts:
+          - .env-pipeline
+    - step: &build-image
+        name: Build image
+        image: atlassian/pipelines-awscli
+        services:
+          - docker
+        script:
+          - docker build -t ${BITBUCKET_REPO_SLUG} .
+          - docker save --output img.docker ${BITBUCKET_REPO_SLUG}
+        artifacts:
+          - img.docker
+    - step: &push-image
+        name: Push image
+        image: atlassian/pipelines-awscli
+        services:
+          - docker
+        script:
+          - source .env-pipeline
+          - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+          - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+          - aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${AWS_ECR}
+          - docker load --input img.docker
+          - docker tag ${BITBUCKET_REPO_SLUG} ${AWS_ECR}/${BITBUCKET_REPO_SLUG}:branch-${BITBUCKET_BRANCH}
+          - docker tag ${BITBUCKET_REPO_SLUG} ${AWS_ECR}/${BITBUCKET_REPO_SLUG}:build-${BITBUCKET_BUILD_NUMBER}
+          - docker tag ${BITBUCKET_REPO_SLUG} ${AWS_ECR}/${BITBUCKET_REPO_SLUG}:commit-${BITBUCKET_COMMIT::8}
+          - docker tag ${BITBUCKET_REPO_SLUG} ${AWS_ECR}/${BITBUCKET_REPO_SLUG}:${BITBUCKET_DEPLOYMENT_ENVIRONMENT}
+          - docker tag ${BITBUCKET_REPO_SLUG} ${AWS_ECR}/${BITBUCKET_REPO_SLUG}:latest
+          - docker push ${AWS_ECR}/${BITBUCKET_REPO_SLUG}
+    - step: &deploy
+        name: Deploy
+        image: atlassian/pipelines-kubectl
+        script:
+          - source .env-pipeline
+          - echo ${ENCODED_ENV_FILE} | base64 -d > .env && cat .env
+          - echo ${ENCODED_KUBE_CONFIG} | base64 -d > kubeconfig.yml && cat kubeconfig.yml
+          - find k8s/${BITBUCKET_DEPLOYMENT_ENVIRONMENT} -type f -exec sed -i -e "s/{{ APP_DOMAIN }}/${APP_DOMAIN}/g" {} \;
+          - find k8s/${BITBUCKET_DEPLOYMENT_ENVIRONMENT} -type f -exec sed -i -e "s/{{ AWS_ECR }}/${AWS_ECR}/g" {} \;
+          - find k8s/${BITBUCKET_DEPLOYMENT_ENVIRONMENT} -type f -exec sed -i -e "s/{{ BITBUCKET_BUILD_NUMBER }}/${BITBUCKET_BUILD_NUMBER}/g" {} \;
+          - find k8s/${BITBUCKET_DEPLOYMENT_ENVIRONMENT} -type f -exec sed -i -e "s/{{ BITBUCKET_DEPLOYMENT_ENVIRONMENT }}/${BITBUCKET_DEPLOYMENT_ENVIRONMENT}/g" {} \;
+          - find k8s/${BITBUCKET_DEPLOYMENT_ENVIRONMENT} -type f -exec sed -i -e "s/{{ BITBUCKET_REPO_SLUG }}/${BITBUCKET_REPO_SLUG}/g" {} \;
+          - apk add curl
+          - curl -o aws-iam-authenticator https://amazon-eks.s3.us-west-2.amazonaws.com/1.19.6/2021-01-05/bin/linux/amd64/aws-iam-authenticator
+          - chmod +x ./aws-iam-authenticator
+          - mkdir -p $HOME/bin && mv ./aws-iam-authenticator $HOME/bin/aws-iam-authenticator && export PATH=$PATH:$HOME/bin
+          - echo 'export PATH=$PATH:$HOME/bin' >> ~/.bashrc
+          - kubectl --kubeconfig=kubeconfig.yml create secret generic ${BITBUCKET_REPO_SLUG}-secret --from-env-file=.env --dry-run -o yaml | kubectl --kubeconfig=kubeconfig.yml apply -f -
+          - kubectl --kubeconfig=kubeconfig.yml apply -f k8s/${BITBUCKET_DEPLOYMENT_ENVIRONMENT}
+pipelines:
+  pull-requests:
+    '{bugfix/*,feature/*,hotfix/*,release/*}':
+    - step: *install-dependencies
+    - parallel:
+      - step: *lint
+      - step: *test
+  branches:
+    development:
+    - step: *install-dependencies
+    - parallel:
+      - step: *lint
+      - step: *test
+    - step: *build-image
+    - step:
+        <<: *set-environment
+        name: Set environment to Development
+        deployment: test
+    - step: *push-image
+    - step: *deploy
+    - step:
+        <<: *set-environment
+        name: Set environment to Staging
+        deployment: staging
+    - step: *push-image
+    - step: *deploy
+    master:
+    - step: *install-dependencies
+    - parallel:
+      - step: *lint
+      - step: *test
+    - step: *build-image
+    - step:
+        <<: *set-environment
+        name: Set environment to Production
+        deployment: production
+    - step: *push-image
+    - step: *deploy
