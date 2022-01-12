@@ -101,7 +101,7 @@ pipelines:
         deployment: staging
     - step: *push-image
     - step: *deploy
-    master:
+    main:
     - step: *install-dependencies
     - parallel:
       - step: *lint
