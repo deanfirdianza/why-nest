@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsInt, IsOptional, Min } from 'class-validator';
+import { IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
 
 export class PaginationDto {
   @IsOptional()
@@ -13,4 +13,9 @@ export class PaginationDto {
   @Min(0)
   @Transform(({ value }) => parseInt(value))
   size?: number = 0;
+
+  @IsOptional()
+  @IsNotEmpty()
+  @IsString()
+  search?: string;
 }
