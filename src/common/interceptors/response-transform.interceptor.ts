@@ -1,6 +1,6 @@
 import { Observable, throwError } from 'rxjs';
 import { catchError, map } from 'rxjs/operators';
-import { EntityNotFoundError } from 'typeorm';
+import { EntityNotFoundError, QueryFailedError } from 'typeorm';
 import { CommonDto } from '../dtos';
 import {
   Injectable,
@@ -13,6 +13,7 @@ import {
   NotFoundException,
   Logger,
   HttpException,
+  ConflictException,
 } from '@nestjs/common';
 
 @Injectable()
@@ -77,6 +78,28 @@ export class ResponseTransformInterceptor<T>
         response.meta = { success: false, time: new Date() };
 
         switch (err?.constructor) {
+          case QueryFailedError:
+            if (err?.constraint?.includes('UQ_')) {
+              response.meta = {
+                code: HttpStatus.CONFLICT,
+                message: 'CONFLICT',
+                ...response.meta,
+              };
+
+              response.errors.push(err.detail);
+              errorFactory = new ConflictException(new CommonDto(response));
+            } else {
+              response.meta = {
+                code: HttpStatus.INTERNAL_SERVER_ERROR,
+                message: 'INTERNAL_SERVER_ERROR',
+                ...response.meta,
+              };
+
+              errorFactory = new InternalServerErrorException(
+                new CommonDto(response),
+              );
+            }
+            break;
           case EntityNotFoundError:
             response.meta = {
               code: HttpStatus.NOT_FOUND,
